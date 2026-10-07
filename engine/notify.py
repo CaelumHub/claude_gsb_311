@@ -9,6 +9,8 @@
 - ``build.finished``  构建结束（成功或失败都发，若订阅）
 - ``build.passed``    构建成功
 - ``build.failed``    构建失败（含 error / cancelled）
+- ``defect.auto_resolved`` 缺陷经连续通过自动闭环
+- ``defect.auto_reopened`` 缺陷因来源用例回归被自动重开
 - ``test``            测试投递
 
 集成只投递它订阅的事件（``events`` 字段）。

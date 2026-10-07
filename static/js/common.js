@@ -27,6 +27,17 @@ const STATUS_LABELS = {
   cancelled: "已取消", error: "错误", skipped: "跳过", timeout: "超时",
 };
 
+const DEFECT_STATUS_LABELS = {
+  open: "待处理", in_progress: "处理中", fixed: "已修复",
+  verified: "已验证", closed: "已关闭", reopened: "已重开",
+};
+
+function defectStatusBadge(status, autoResolved) {
+  const cls = autoResolved ? `${esc(status)} auto` : esc(status);
+  const suffix = autoResolved ? "（自动）" : "";
+  return `<span class="badge ${cls}" title="${autoResolved ? "系统自动流转" : "人工流转"}">${esc(DEFECT_STATUS_LABELS[status] || status)}${suffix}</span>`;
+}
+
 const PRIORITY_LABELS = { P0: "P0 · 最高", P1: "P1 · 高", P2: "P2 · 中", P3: "P3 · 低" };
 
 /* ---------- 导航注入 ---------- */

@@ -273,6 +273,18 @@ class Scheduler:
             for fr in failures[:20]:
                 self.defects.create_from_case(project_id, fr, build_id)
 
+        # 缺陷自动闭环：按来源用例本场结果做一次增量判定
+        if project:
+            transitions = self.defects.evaluate_build(project_id, build_id, self.builds)
+            for tr in transitions:
+                store.append_log(
+                    build_id,
+                    f"[缺陷自动流转] {tr['defect_id']} {tr['from_status']} -> "
+                    f"{tr['to_status']}：{tr['reason']}")
+                event = "defect.auto_resolved" if tr["to_status"] != "reopened" \
+                    else "defect.auto_reopened"
+                self.notify.fire(project_id, event, tr)
+
     # ------------------------------------------------------------------ 定时循环
     def _tick_loop(self) -> None:
         while not self._stop_event.is_set():

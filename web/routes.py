@@ -69,6 +69,27 @@ def _store(name: str):
     return _registry().store(name)
 
 
+# 缺陷自动闭环的项目级配置字段及校验
+_AUTO_CLOSE_FIELDS = {
+    "auto_close_enabled": lambda v: bool(v),
+    "auto_close_pass_threshold": lambda v: max(1, min(int(v), 20)),
+    "auto_close_target_status": lambda v: v if v in ("verified", "fixed", "closed") else "verified",
+    "auto_close_jitter_policy": lambda v: v if v in ("strict", "tolerate_once") else "strict",
+}
+
+
+def _auto_close_patch(data: dict) -> dict:
+    """从请求数据提取并校验自动闭环配置，非法字段给默认值。"""
+    patch = {}
+    for field, conv in _AUTO_CLOSE_FIELDS.items():
+        if field in data and data[field] is not None:
+            try:
+                patch[field] = conv(data[field])
+            except (TypeError, ValueError):
+                pass
+    return patch
+
+
 def _build_or_404(build_id: str):
     build = _builds().find_build(build_id)
     if build is None:
@@ -109,6 +130,7 @@ def create_project():
         "description": data.get("description", ""),
         "repo_url": data.get("repo_url", ""),
         "auto_create_defects": bool(data.get("auto_create_defects", False)),
+        **_auto_close_patch(data),
         "created_at": time.time(),
     }
     _store("projects").insert(project)
@@ -131,6 +153,7 @@ def update_project(project_id: str):
     data = _payload()
     patch = {k: data[k] for k in ("name", "description", "repo_url",
                                   "auto_create_defects") if k in data}
+    patch.update(_auto_close_patch(data))
     updated = _store("projects").update(project_id, patch)
     return jsonify(updated)
 
@@ -440,6 +463,21 @@ def build_report(build_id: str):
     report = _report().build_report(build["project_id"], build_id, force=force)
     if "error" in report:
         return _err(report["error"], 404)
+    # 失败明细附上关联缺陷的实时状态（与缺陷统计同源，避免报告页显示与
+    # 统计口径分叉：自动流转后这里同步变化）
+    defect_mgr = _defects()
+    for f in report.get("failures", []):
+        linked = None
+        for d in defect_mgr.list(build["project_id"]):
+            if d.get("source_case_id") == f.get("case_id"):
+                linked = {
+                    "id": d["id"], "status": d.get("status"),
+                    "auto_resolved": bool(d.get("auto_resolved")),
+                    "resolved_by": d.get("resolved_by"),
+                    "auto_streak": d.get("auto_streak", 0),
+                }
+                break
+        f["defect"] = linked
     return jsonify(report)
 
 
@@ -489,7 +527,9 @@ def create_defect(project_id: str):
     data = _payload()
     if not (data.get("title") or "").strip():
         return _err("缺陷标题不能为空")
-    return jsonify(_defects().create(project_id, data))
+    defect = _defects().create(project_id, data)
+    # 支持建单时直接关联来源用例 / 构建
+    return jsonify(defect)
 
 
 @api.get("/defects/<defect_id>")
@@ -507,8 +547,15 @@ def update_defect(defect_id: str):
         return _err("缺陷不存在", 404)
     data = _payload()
     patch = {k: data[k] for k in ("title", "description", "severity", "status",
-                                  "assignee", "tags") if k in data}
-    return jsonify(_defects().update(defect_id, patch))
+                                  "assignee", "tags", "source_case_id",
+                                  "source_build_id") if k in data}
+    # 人工状态流转必须留操作员与原因，与系统自动流转（actor=system）区分开
+    operator = (data.get("operator") or "人工").strip() or "人工"
+    if data.get("reason"):
+        patch["reason"] = data["reason"]
+    else:
+        patch["reason"] = f"人工流转（{operator}）"
+    return jsonify(_defects().update(defect_id, patch, operator=operator))
 
 
 @api.delete("/defects/<defect_id>")

@@ -18,6 +18,30 @@ BUILD_STATUSES = ["pending", "running", "passed", "failed", "cancelled", "error"
 SEVERITIES = ["blocker", "critical", "major", "minor", "trivial"]
 DEFECT_STATUSES = ["open", "in_progress", "fixed", "verified", "closed", "reopened"]
 
+# 缺陷操作人类型：system = 系统自动流转（可被自动重开），manual = 人工操作（人类保有所有权）
+DEFECT_ACTORS = ["system", "manual"]
+
+# 缺陷自动闭环目标状态：verified = 已验证（默认，保守口径），fixed = 已修复，closed = 已关闭
+AUTO_CLOSE_TARGETS = ["verified", "fixed", "closed"]
+
+# 环境抖动口径：strict = 抖动即清零；tolerate_once = 每个连续通过窗口容错一次
+JITTER_POLICIES = ["strict", "tolerate_once"]
+
+# 环境抖动对应的用例结果：error / timeout 多为环境、网络、超时问题，
+# 与断言失败 failed（真实回归）区分开。
+JITTER_CASE_STATUSES = ("error", "timeout")
+FAIL_CASE_STATUSES = ("failed",)
+# 参与连续判定的「有效」用例结果；skipped 不参与
+COUNTED_CASE_STATUSES = ("passed", "failed", "error", "timeout")
+
+# 自动闭环默认配置（项目级开关，可按项目覆盖）
+DEFAULT_AUTO_CLOSE = {
+    "enabled": False,
+    "pass_threshold": 3,
+    "jitter_policy": "strict",
+    "target_status": "verified",
+}
+
 # 通知集成类型
 INTEGRATION_TYPES = ["webhook", "slack", "email", "dingtalk"]
 

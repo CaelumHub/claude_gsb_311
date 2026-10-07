@@ -46,6 +46,24 @@
           <input type="checkbox" id="np-auto" style="width:auto"> 构建失败时自动把失败用例转为缺陷
         </label>
       </div>
+      <div class="mt">
+        <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;color:var(--text)">
+          <input type="checkbox" id="np-autoclose" style="width:auto">
+          开启缺陷自动闭环：来源用例连续
+          <input type="number" id="np-threshold" min="1" max="20" value="3" style="width:70px">
+          场通过后自动置为
+          <select id="np-target" style="width:110px">
+            <option value="verified">已验证</option>
+            <option value="fixed">已修复</option>
+            <option value="closed">已关闭</option>
+          </select>
+          ；环境抖动（error/timeout）
+          <select id="np-policy" style="width:120px">
+            <option value="strict">严格清零</option>
+            <option value="tolerate_once">容错一次</option>
+          </select>
+        </label>
+      </div>
       <div class="row mt">
         <button class="btn" id="btn-create">创建</button>
         <button class="btn secondary" id="btn-cancel">取消</button>
@@ -109,9 +127,14 @@ $("#btn-create").onclick = async () => {
   await api("/api/projects", { method: "POST", body: {
     name, description: $("#np-desc").value, repo_url: $("#np-repo").value,
     auto_create_defects: $("#np-auto").checked,
+    auto_close_enabled: $("#np-autoclose").checked,
+    auto_close_pass_threshold: parseInt($("#np-threshold").value, 10) || 3,
+    auto_close_target_status: $("#np-target").value,
+    auto_close_jitter_policy: $("#np-policy").value,
   }});
   toast("项目已创建");
   $("#np-name").value = ""; $("#np-desc").value = ""; $("#np-repo").value = "";
+  $("#np-autoclose").checked = false;
   $("#new-card").style.display = "none";
   load();
 };

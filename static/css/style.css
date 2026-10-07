@@ -189,6 +189,21 @@ td .mono { font-size: 12px; color: var(--text-muted); }
 .badge.blue { background: var(--primary-soft); color: var(--blue); }
 .badge.violet { background: #f3e8ff; color: var(--violet); }
 
+/* 缺陷状态 */
+.badge.open, .badge.reopened { background: #fdecec; color: var(--red); }
+.badge.in_progress { background: var(--primary-soft); color: var(--primary); }
+.badge.fixed { background: #fef3e2; color: var(--amber); }
+.badge.verified, .badge.closed { background: #e7f6ec; color: var(--green); }
+/* 系统自动流转：虚线边框，与人工流转区分 */
+.badge.auto { outline: 1px dashed currentColor; outline-offset: -1px; }
+
+.auto-tag { font-size: 11px; color: var(--primary); background: var(--primary-soft);
+  border-radius: 4px; padding: 0 6px; margin-left: 6px; }
+.hist-item { border-left: 3px solid var(--border); padding: 4px 0 4px 10px;
+  margin: 6px 0; font-size: 12.5px; }
+.hist-item.system { border-left-color: var(--primary); }
+.hist-item.manual { border-left-color: var(--amber); }
+
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .dot.green { background: var(--green); }
 .dot.red { background: var(--red); }

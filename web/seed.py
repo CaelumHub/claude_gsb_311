@@ -21,6 +21,10 @@ def seed_demo_data(registry, env_mgr, notify_mgr) -> dict:
         "description": "内置示例用例、套件、环境与通知集成的演示项目。",
         "repo_url": "https://example.com/demo",
         "auto_create_defects": True,
+        "auto_close_enabled": True,
+        "auto_close_pass_threshold": 2,
+        "auto_close_target_status": "verified",
+        "auto_close_jitter_policy": "tolerate_once",
         "created_at": time.time(),
     }
     registry.store("projects").insert(proj)

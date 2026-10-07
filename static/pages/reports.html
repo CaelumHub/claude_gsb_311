@@ -152,8 +152,9 @@ function renderReport(r) {
         <td style="color:var(--red)">${(v.failed||0)+(v.error||0)+(v.timeout||0)}</td></tr>`).join("")}</tbody></table></div>` : ""}
 
     ${failures.length ? `<div class="mt"><h3>失败明细</h3><table>
-      <thead><tr><th>用例</th><th>状态</th><th>原因</th><th>耗时</th></tr></thead>
+      <thead><tr><th>用例</th><th>状态</th><th>关联缺陷</th><th>原因</th><th>耗时</th></tr></thead>
       <tbody>${failures.map(f => `<tr><td>${esc(f.case_name||f.case_id)}</td><td>${statusBadge(f.status)}</td>
+        <td>${f.defect ? defectStatusBadge(f.defect.status, f.defect.auto_resolved) : '<span class="muted">—</span>'}</td>
         <td class="muted" style="font-size:13px">${esc(f.reason||"")}</td><td>${fmtDur(f.duration)}</td></tr>`).join("")}</tbody></table></div>` : ""}
 
     ${slowest.length ? `<div class="mt"><h3>最慢用例</h3><table>

@@ -10,6 +10,9 @@
     .sev-blocker, .sev-critical { background:#fdecec; color:var(--red); }
     .sev-major { background:#fef3e2; color:var(--amber); }
     .sev-minor, .sev-trivial { background:#f1f5f9; color:#64748b; }
+    .streak-bar { display:inline-flex; gap:3px; vertical-align:middle; margin-left:6px; }
+    .streak-bar i { width:10px; height:10px; border-radius:2px; background:#e2e8f0; display:inline-block; }
+    .streak-bar i.on { background:var(--green); }
   </style>
 </head>
 <body>
@@ -18,23 +21,59 @@
 
   <main class="main">
     <h1 class="page-title">缺陷跟踪</h1>
-    <p class="page-desc">管理测试发现的缺陷，维护状态流转，支持关联来源用例与构建。</p>
+    <p class="page-desc">管理测试发现的缺陷，维护状态流转，支持关联来源用例与构建；可按项目开启自动闭环。</p>
 
     <div class="card">
       <div class="row">
         <label style="margin:0 6px 0 0;align-self:center">项目</label>
         <select id="project-select" style="max-width:240px" onchange="switchProject(this.value)"></select>
         <select id="status-filter" style="max-width:140px" onchange="loadDefects()">
-          <option value="">全部状态</option><option>open</option><option>in_progress</option>
-          <option>fixed</option><option>verified</option><option>closed</option><option>reopened</option>
         </select>
         <select id="sev-filter" style="max-width:140px" onchange="loadDefects()">
           <option value="">全部级别</option><option>blocker</option><option>critical</option>
           <option>major</option><option>minor</option><option>trivial</option>
         </select>
         <span style="flex:1"></span>
+        <button class="btn secondary" id="btn-cfg">自动闭环设置</button>
         <button class="btn" id="btn-new">新建缺陷</button>
       </div>
+    </div>
+
+    <div class="card" id="autoclose-cfg" style="display:none">
+      <div class="row spread">
+        <h2 style="margin:0">缺陷自动闭环设置（项目级）</h2>
+        <button class="btn small secondary" id="btn-cfg-close">收起</button>
+      </div>
+      <p class="muted" style="font-size:13px;margin:6px 0">
+        开启后，关联了来源用例的缺陷会在该用例后续构建中连续通过达到阈值时自动流转；
+        用例再次真实失败时自动重开。判定跨多场构建累计，每场构建只计一次，用例未执行 /
+        构建被取消不参与；error / timeout 视为环境抖动，永不自动重开。
+      </p>
+      <div class="grid cols-2">
+        <label style="display:inline-flex;align-items:center;gap:8px;font-weight:400">
+          <input type="checkbox" id="cfg-enabled" style="width:auto"> 开启缺陷自动闭环
+        </label>
+        <div>
+          <label>连续通过阈值（场）</label>
+          <input type="number" id="cfg-threshold" min="1" max="20" value="3" style="max-width:120px">
+        </div>
+        <div>
+          <label>达标后自动流转为</label>
+          <select id="cfg-target">
+            <option value="verified">已验证（推荐）</option>
+            <option value="fixed">已修复</option>
+            <option value="closed">已关闭</option>
+          </select>
+        </div>
+        <div>
+          <label>环境抖动口径（error / timeout）</label>
+          <select id="cfg-policy">
+            <option value="strict">严格清零：抖动一场，连续通过立即清零重来</option>
+            <option value="tolerate_once">容错一次：每个连续通过窗口容忍一次抖动，再抖才清零</option>
+          </select>
+        </div>
+      </div>
+      <div class="row mt"><button class="btn" id="btn-cfg-save">保存设置</button></div>
     </div>
 
     <div class="card" id="stats"><div class="empty">加载中…</div></div>
@@ -53,10 +92,18 @@
             <option>blocker</option><option>critical</option><option selected>major</option><option>minor</option><option>trivial</option></select></div>
           <div><label>指派给</label><input type="text" id="d-assignee" placeholder="qa / 开发者"></div>
         </div>
-        <div class="mt"><label>描述</label><textarea id="d-desc" style="min-height:100px"></textarea></div>
+        <div class="mt"><label>描述</label><textarea id="d-desc" style="min-height:80px"></textarea></div>
+        <div class="grid cols-2 mt">
+          <div><label>来源用例 ID（用于自动闭环判定）</label><input type="text" id="d-case" placeholder="case_xxx，可留空"></div>
+          <div><label>来源构建 ID</label><input type="text" id="d-build" placeholder="build_xxx，可留空"></div>
+        </div>
         <div class="row mt">
           <button class="btn" id="btn-save">保存</button>
           <button class="btn secondary" id="btn-cancel">取消</button>
+        </div>
+        <div id="d-history" class="mt" style="display:none">
+          <h3>流转留痕</h3>
+          <div id="d-history-list"></div>
         </div>
       </section>
     </div>
@@ -72,6 +119,8 @@ let editingId = null;
 const STATUS_OPTIONS = ["open","in_progress","fixed","verified","closed","reopened"];
 
 async function init() {
+  $("#status-filter").innerHTML = '<option value="">全部状态</option>' +
+    STATUS_OPTIONS.map(s => `<option value="${s}">${DEFECT_STATUS_LABELS[s]}</option>`).join("");
   const params = new URLSearchParams(location.search);
   projectId = await fillProjectSelect($("#project-select"), params.get("project_id"));
   await refresh();
@@ -79,58 +128,128 @@ async function init() {
 
 async function switchProject(id) { projectId = id; editingId = null; await refresh(); }
 
-async function refresh() { await Promise.all([loadDefects(), loadStats()]); }
+async function refresh() { await Promise.all([loadDefects(), loadStats(), loadConfig()]); }
+
+async function loadConfig() {
+  const p = await api(`/api/projects/${projectId}`);
+  $("#cfg-enabled").checked = !!p.auto_close_enabled;
+  $("#cfg-threshold").value = p.auto_close_pass_threshold || 3;
+  $("#cfg-target").value = p.auto_close_target_status || "verified";
+  $("#cfg-policy").value = p.auto_close_jitter_policy || "strict";
+}
 
 async function loadStats() {
   const d = await api(`/api/projects/${projectId}/defects/stats`);
   const bs = d.by_status || {}, bv = d.by_severity || {};
+  const pending = (bs.open||0)+(bs.reopened||0)+(bs.in_progress||0);
+  const resolved = (bs.fixed||0)+(bs.verified||0)+(bs.closed||0);
   $("#stats").innerHTML = `
     <div class="grid cols-4">
       <div class="stat primary"><div class="v">${d.total}</div><div class="k">缺陷总数</div></div>
-      <div class="stat bad"><div class="v">${bs.open||0}</div><div class="k">待处理</div></div>
-      <div class="stat good"><div class="v">${(bs.fixed||0)+(bs.verified||0)+(bs.closed||0)}</div><div class="k">已解决</div></div>
-      <div class="stat primary"><div class="v">${(bv.blocker||0)+(bv.critical||0)}</div><div class="k">阻断/严重</div></div>
+      <div class="stat bad"><div class="v">${pending}</div><div class="k">待处理</div></div>
+      <div class="stat good"><div class="v">${resolved}</div><div class="k">已解决</div></div>
+      <div class="stat primary"><div class="v">${d.auto_resolved||0}</div><div class="k">系统自动闭环</div></div>
     </div>`;
+}
+
+function streakBar(streak, threshold) {
+  const n = Math.min(Math.max(threshold||3, streak||0), 12);
+  let html = '<span class="streak-bar" title="连续通过 '+streak+'/'+threshold+'">';
+  for (let i = 0; i < n; i++) html += `<i class="${i < streak ? "on" : ""}"></i>`;
+  return html + '</span>';
 }
 
 async function loadDefects() {
   const st = encodeURIComponent($("#status-filter").value);
   const sv = encodeURIComponent($("#sev-filter").value);
-  const d = await api(`/api/projects/${projectId}/defects?status=${st}&severity=${sv}`);
+  const [d, p] = await Promise.all([
+    api(`/api/projects/${projectId}/defects?status=${st}&severity=${sv}`),
+    api(`/api/projects/${projectId}`),
+  ]);
+  const threshold = p.auto_close_pass_threshold || 3;
   const defects = d.defects || [];
   const host = $("#defect-list");
   if (!defects.length) { host.innerHTML = '<div class="empty">暂无缺陷</div>'; return; }
-  host.innerHTML = defects.map(x => `
+  host.innerHTML = defects.map((x, idx) => `
     <div class="defect-item">
       <div class="row spread">
-        <div class="row"><span class="badge sev-${x.severity}">${esc(x.severity)}</span><strong>${esc(x.title)}</strong></div>
-        <span class="badge ${x.status}">${esc(x.status)}</span>
+        <div class="row">
+          <span class="badge sev-${x.severity}">${esc(x.severity)}</span>
+          <strong>${esc(x.title)}</strong>
+          ${x.auto_resolved ? '<span class="auto-tag">系统自动</span>' : ''}
+        </div>
+        ${defectStatusBadge(x.status, !!x.auto_resolved)}
       </div>
       <div class="muted mt" style="font-size:13px">${esc(x.description||"")}</div>
       <div class="mt" style="font-size:12px;color:var(--text-muted)">
-        ${x.assignee?`指派: ${esc(x.assignee)} · `:""}${x.source_case_id?`来源用例: <span class="mono">${esc(x.source_case_id)}</span> · `:""}
+        ${x.assignee?`指派: ${esc(x.assignee)} · `:""}
+        ${x.source_case_id?`来源用例: <span class="mono">${esc(x.source_case_id)}</span> · `:""}
+        ${x.source_build_id?`来源构建: <span class="mono">${esc(x.source_build_id)}</span> · `:""}
+        连续通过 ${x.auto_streak||0}/${threshold} ${streakBar(x.auto_streak||0, threshold)} ·
         创建 ${fmtTime(x.created_at)}
       </div>
       <div class="row mt" style="gap:6px">
-        <select onchange="changeStatus('${x.id}', this.value)" style="max-width:150px">
-          ${STATUS_OPTIONS.map(s => `<option ${s===x.status?'selected':''}>${s}</option>`).join("")}
+        <select data-defect="${x.id}" data-idx="${idx}" onchange="changeStatus(this)" style="max-width:150px">
+          ${STATUS_OPTIONS.map(s => `<option value="${s}" ${s===x.status?'selected':''}>${DEFECT_STATUS_LABELS[s]}</option>`).join("")}
         </select>
-        <button class="btn small secondary" onclick="editDefect('${x.id}')">编辑</button>
+        <button class="btn small secondary" onclick="editDefect('${x.id}')">编辑/留痕</button>
+        <button class="btn small secondary" onclick="toggleHist('${x.id}')">流转记录(${(x.history||[]).length})</button>
         <button class="btn small danger" onclick="delDefect('${x.id}')">删除</button>
       </div>
+      <div id="hist-${x.id}" style="display:none" class="mt"></div>
+    </div>`).join("");
+  window._defects = defects;
+}
+
+function histHtml(history) {
+  if (!history || !history.length) return '<div class="empty muted" style="font-size:12px">暂无流转记录</div>';
+  return history.slice().reverse().map(h => `
+    <div class="hist-item ${h.actor === 'system' ? 'system' : 'manual'}">
+      <div><strong>${h.actor === 'system' ? '🤖 系统自动' : '👤 人工'}</strong>
+        <span class="muted">${esc(h.operator || '')}</span>
+        ${DEFECT_STATUS_LABELS[h.from_status]||h.from_status||'—'} → <strong>${DEFECT_STATUS_LABELS[h.to_status]||h.to_status}</strong>
+        <span class="muted">· ${fmtTime(h.at)}</span></div>
+      <div class="muted">${esc(h.reason || '')}${h.build_id ? ' · 构建 <span class="mono">'+esc(h.build_id)+'</span>' : ''}</div>
     </div>`).join("");
 }
 
-async function changeStatus(id, status) {
-  await api(`/api/defects/${id}`, { method: "PUT", body: { status } });
-  toast("状态已更新");
-  refresh();
+function toggleHist(id) {
+  const box = $(`#hist-${id}`);
+  if (box.style.display === "none") {
+    const x = (window._defects||[]).find(d => d.id === id);
+    box.innerHTML = histHtml(x && x.history);
+    box.style.display = "block";
+  } else box.style.display = "none";
 }
 
-function newDefect() {
+async function changeStatus(sel) {
+  const id = sel.dataset.defect;
+  const defects = window._defects || [];
+  const x = defects.find(d => d.id === id);
+  const newStatus = sel.value;
+  if (!x || newStatus === x.status) return;
+  let operator = localStorage.getItem("defect_operator") || "";
+  operator = prompt("请输入操作人（人工流转留痕，与系统自动流转区分）：", operator);
+  if (operator === null) { sel.value = x.status; return; }
+  operator = operator.trim() || "人工";
+  localStorage.setItem("defect_operator", operator);
+  const reason = prompt("请输入流转原因：", `人工将缺陷置为「${DEFECT_STATUS_LABELS[newStatus]}」`);
+  if (reason === null) { sel.value = x.status; return; }
+  try {
+    await api(`/api/defects/${id}`, { method: "PUT", body: {
+      status: newStatus, operator, reason: reason.trim() || "人工流转",
+    }});
+    toast("状态已更新（人工流转已留痕）");
+    refresh();
+  } catch (e) { toast(e.message, "error"); sel.value = x.status; }
+}
+
+function resetForm() {
   editingId = null;
   $("#edit-title").textContent = "新建缺陷";
-  $("#d-title").value = ""; $("#d-desc").value = ""; $("#d-assignee").value = ""; $("#d-sev").value = "major";
+  $("#d-title").value = ""; $("#d-desc").value = ""; $("#d-assignee").value = "";
+  $("#d-sev").value = "major"; $("#d-case").value = ""; $("#d-build").value = "";
+  $("#d-history").style.display = "none";
 }
 
 function editDefect(id) {
@@ -139,6 +258,11 @@ function editDefect(id) {
   api(`/api/defects/${id}`).then(x => {
     $("#d-title").value = x.title || ""; $("#d-desc").value = x.description || "";
     $("#d-assignee").value = x.assignee || ""; $("#d-sev").value = x.severity || "major";
+    $("#d-case").value = x.source_case_id || "";
+    $("#d-build").value = x.source_build_id || "";
+    $("#d-history").style.display = "block";
+    $("#d-history-list").innerHTML = histHtml(x.history);
+    window.scrollTo({ top: $("#edit-card").offsetTop - 20, behavior: "smooth" });
   });
 }
 
@@ -149,14 +273,16 @@ async function delDefect(id) {
   refresh();
 }
 
-$("#btn-new").onclick = newDefect;
-$("#btn-cancel").onclick = () => { editingId = null; };
+$("#btn-new").onclick = resetForm;
+$("#btn-cancel").onclick = resetForm;
 
 $("#btn-save").onclick = async () => {
   const title = $("#d-title").value.trim();
   if (!title) return toast("请输入缺陷标题", "error");
   const body = { title, description: $("#d-desc").value, severity: $("#d-sev").value,
-    assignee: $("#d-assignee").value };
+    assignee: $("#d-assignee").value,
+    source_case_id: $("#d-case").value.trim() || null,
+    source_build_id: $("#d-build").value.trim() || null };
   if (editingId) {
     await api(`/api/defects/${editingId}`, { method: "PUT", body });
     toast("已保存");
@@ -164,7 +290,23 @@ $("#btn-save").onclick = async () => {
     await api(`/api/projects/${projectId}/defects`, { method: "POST", body });
     toast("已创建");
   }
-  newDefect(); refresh();
+  resetForm(); refresh();
+};
+
+// -- 自动闭环设置
+$("#btn-cfg").onclick = () => { $("#autoclose-cfg").style.display = "block"; };
+$("#btn-cfg-close").onclick = () => { $("#autoclose-cfg").style.display = "none"; };
+$("#btn-cfg-save").onclick = async () => {
+  const threshold = parseInt($("#cfg-threshold").value, 10);
+  if (!(threshold >= 1 && threshold <= 20)) return toast("连续通过阈值需在 1~20 之间", "error");
+  await api(`/api/projects/${projectId}`, { method: "PUT", body: {
+    auto_close_enabled: $("#cfg-enabled").checked,
+    auto_close_pass_threshold: threshold,
+    auto_close_target_status: $("#cfg-target").value,
+    auto_close_jitter_policy: $("#cfg-policy").value,
+  }});
+  toast("自动闭环设置已保存");
+  refresh();
 };
 
 init();
