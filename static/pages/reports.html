@@ -108,11 +108,23 @@ async function loadBuilds() {
 async function selectBuild(id) {
   currentBuild = id;
   loadBuilds();
-  const r = await api(`/api/builds/${id}/report`);
-  renderReport(r);
+  // 报告走缓存，关联缺陷走实时查询 —— 缺陷状态与缺陷页 / 统计始终一致
+  const [r, dd] = await Promise.all([
+    api(`/api/builds/${id}/report`),
+    api(`/api/builds/${id}/defects`),
+  ]);
+  renderReport(r, dd.defects || []);
 }
 
-function renderReport(r) {
+function defectStatusBadge(d) {
+  const auto = (["fixed","verified","closed"].includes(d.status) && d.closed_by === "auto") ||
+               (d.status === "reopened" && d.reopened_by === "auto");
+  return `<span class="badge ${d.status}">${esc(d.status)}</span>` +
+    (auto ? ' <span class="badge auto">自动</span>' : "");
+}
+
+function renderReport(r, defects) {
+  defects = defects || [];
   $("#report-title").textContent = r.name || r.build_id;
   const s = r.summary || {};
   const d = r.durations || {};
@@ -155,6 +167,12 @@ function renderReport(r) {
       <thead><tr><th>用例</th><th>状态</th><th>原因</th><th>耗时</th></tr></thead>
       <tbody>${failures.map(f => `<tr><td>${esc(f.case_name||f.case_id)}</td><td>${statusBadge(f.status)}</td>
         <td class="muted" style="font-size:13px">${esc(f.reason||"")}</td><td>${fmtDur(f.duration)}</td></tr>`).join("")}</tbody></table></div>` : ""}
+
+    ${defects.length ? `<div class="mt"><h3>关联缺陷（实时状态）</h3><table>
+      <thead><tr><th>缺陷</th><th>级别</th><th>当前状态</th><th>来源用例</th></tr></thead>
+      <tbody>${defects.map(d => `<tr><td>${esc(d.title)}</td><td>${esc(d.severity)}</td>
+        <td>${defectStatusBadge(d)}</td>
+        <td class="mono" style="font-size:12px">${esc(d.source_case_id||"—")}</td></tr>`).join("")}</tbody></table></div>` : ""}
 
     ${slowest.length ? `<div class="mt"><h3>最慢用例</h3><table>
       <thead><tr><th>用例</th><th>分组</th><th>状态</th><th>耗时</th></tr></thead>

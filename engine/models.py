@@ -18,6 +18,15 @@ BUILD_STATUSES = ["pending", "running", "passed", "failed", "cancelled", "error"
 SEVERITIES = ["blocker", "critical", "major", "minor", "trivial"]
 DEFECT_STATUSES = ["open", "in_progress", "fixed", "verified", "closed", "reopened"]
 
+# 缺陷「已解决」类状态（自动闭环判定用）
+DEFECT_RESOLVED_STATUSES = ["fixed", "verified", "closed"]
+
+# 缺陷流转操作者（自动 / 人工，追责与统计用）
+DEFECT_ACTORS = ["auto", "manual"]
+
+# 自动闭环可流转到的目标状态
+DEFECT_AUTO_CLOSE_TARGETS = ["verified", "fixed"]
+
 # 通知集成类型
 INTEGRATION_TYPES = ["webhook", "slack", "email", "dingtalk"]
 

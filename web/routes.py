@@ -109,6 +109,11 @@ def create_project():
         "description": data.get("description", ""),
         "repo_url": data.get("repo_url", ""),
         "auto_create_defects": bool(data.get("auto_create_defects", False)),
+        # 缺陷自动闭环：开关 + 连续通过场数 + 目标状态 + 抖动容错场数
+        "auto_close_defects": bool(data.get("auto_close_defects", False)),
+        "auto_close_required_passes": data.get("auto_close_required_passes", 3),
+        "auto_close_target_status": data.get("auto_close_target_status", "verified"),
+        "auto_close_flaky_tolerance": data.get("auto_close_flaky_tolerance", 1),
         "created_at": time.time(),
     }
     _store("projects").insert(project)
@@ -130,7 +135,10 @@ def update_project(project_id: str):
         return _err("项目不存在", 404)
     data = _payload()
     patch = {k: data[k] for k in ("name", "description", "repo_url",
-                                  "auto_create_defects") if k in data}
+                                  "auto_create_defects", "auto_close_defects",
+                                  "auto_close_required_passes",
+                                  "auto_close_target_status",
+                                  "auto_close_flaky_tolerance") if k in data}
     updated = _store("projects").update(project_id, patch)
     return jsonify(updated)
 
@@ -508,7 +516,36 @@ def update_defect(defect_id: str):
     data = _payload()
     patch = {k: data[k] for k in ("title", "description", "severity", "status",
                                   "assignee", "tags") if k in data}
-    return jsonify(_defects().update(defect_id, patch))
+    # 人工流转：记录操作者与原因，与自动流转区分留痕
+    return jsonify(_defects().update(defect_id, patch, actor="manual",
+                                     operator=data.get("operator", ""),
+                                     reason=data.get("reason", "")))
+
+
+@api.get("/defects/<defect_id>/events")
+def defect_events(defect_id: str):
+    """单个缺陷的流转留痕（自动 / 人工可区分）。"""
+    if _defects().get(defect_id) is None:
+        return _err("缺陷不存在", 404)
+    return jsonify({"events": _defects().events(defect_id)})
+
+
+@api.get("/projects/<project_id>/defects/events")
+def project_defect_events(project_id: str):
+    """项目级缺陷流转记录（审计用）。"""
+    limit = request.args.get("limit", 100, type=int)
+    return jsonify({"events": _defects().project_events(project_id, limit=limit)})
+
+
+@api.get("/builds/<build_id>/defects")
+def build_defects(build_id: str):
+    """构建关联的缺陷（实时查询，状态与缺陷页 / 统计保持一致）。"""
+    build, err = _build_or_404(build_id)
+    if err:
+        return err
+    linked = [d for d in _defects().list(build["project_id"])
+              if d.get("source_build_id") == build_id]
+    return jsonify({"build_id": build_id, "defects": linked})
 
 
 @api.delete("/defects/<defect_id>")

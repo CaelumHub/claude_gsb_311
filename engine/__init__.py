@@ -8,7 +8,7 @@
 - :mod:`engine.environments`环境管理（配置、依赖解析、工作区隔离）
 - :mod:`engine.coverage`    代码覆盖率分析（模拟，按构建稳定生成）
 - :mod:`engine.report`      测试报告生成（通过率 / 耗时 / 分组 / 趋势）
-- :mod:`engine.defects`     缺陷跟踪
+- :mod:`engine.defects`     缺陷跟踪与自动闭环（连续通过自动关闭 / 失败自动重开 / 流转留痕）
 - :mod:`engine.notify`      通知与集成
 - :mod:`engine.scheduler`   并发调度（构建池 + 用例池 + 定时触发循环）
 """

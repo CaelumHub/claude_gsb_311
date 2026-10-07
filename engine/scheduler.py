@@ -273,6 +273,21 @@ class Scheduler:
             for fr in failures[:20]:
                 self.defects.create_from_case(project_id, fr, build_id)
 
+        # 缺陷自动闭环（项目开关）：来源用例连续通过 → 自动关闭；再次失败 → 自动重开。
+        # 放在自动建缺陷之后，新缺陷的计数起点晚于本构建结束时间，不会被本构建误伤。
+        if project and project.get("auto_close_defects"):
+            try:
+                transitions = self.defects.process_build(project, build, store)
+            except Exception:  # noqa: BLE001
+                transitions = []
+            for tr in transitions:
+                store.append_log(
+                    build_id,
+                    f"[缺陷自动流转] {tr['defect_id']}: "
+                    f"{tr['from_status']} -> {tr['to_status']}（{tr['reason']}）")
+                self.notify.fire(project_id, "defect.auto_transition", {
+                    "project_id": project_id, **tr})
+
     # ------------------------------------------------------------------ 定时循环
     def _tick_loop(self) -> None:
         while not self._stop_event.is_set():

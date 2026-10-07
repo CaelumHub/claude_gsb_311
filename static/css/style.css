@@ -189,6 +189,14 @@ td .mono { font-size: 12px; color: var(--text-muted); }
 .badge.blue { background: var(--primary-soft); color: var(--blue); }
 .badge.violet { background: #f3e8ff; color: var(--violet); }
 
+/* 缺陷状态与流转方式 */
+.badge.open, .badge.reopened { background: #fdecec; color: var(--red); }
+.badge.in_progress { background: var(--primary-soft); color: var(--primary); }
+.badge.fixed { background: #fef3e2; color: var(--amber); }
+.badge.verified, .badge.closed { background: #e7f6ec; color: var(--green); }
+.badge.auto { background: #f3e8ff; color: var(--violet); }
+.badge.manual { background: #f1f5f9; color: #64748b; }
+
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .dot.green { background: var(--green); }
 .dot.red { background: var(--red); }

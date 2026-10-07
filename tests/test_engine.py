@@ -10,6 +10,7 @@ import datetime
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -244,6 +245,189 @@ class TestDefects(unittest.TestCase):
             self.assertIsNotNone(defect)
             self.assertEqual(defect["source_case_id"], "c1")
             self.assertEqual(mgr.stats("p1")["total"], 1)
+
+
+class _FakeBuildStore:
+    """process_build 的最小构建存储替身：只提供 results()。"""
+
+    def __init__(self, results):
+        self._results = results
+
+    def results(self, build_id):
+        return self._results
+
+
+def _build(bid, results, finished_at, status="passed"):
+    return {"id": bid, "project_id": "p1", "status": status,
+            "finished_at": finished_at}, _FakeBuildStore(results)
+
+
+def _pass(case_id="c1"):
+    return {"case_id": case_id, "case_name": case_id, "status": "passed"}
+
+
+def _fail(case_id="c1", status="failed"):
+    return {"case_id": case_id, "case_name": case_id, "status": status}
+
+
+class TestDefectAutoClose(unittest.TestCase):
+    """缺陷自动闭环：连续通过累计、抖动容错口径、自动重开与留痕。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.reg = StoreRegistry(os.path.join(self.tmp.name, "store"))
+        self.mgr = DefectManager(self.reg)
+        self.project = {
+            "id": "p1", "auto_close_defects": True,
+            "auto_close_required_passes": 3,
+            "auto_close_target_status": "verified",
+            "auto_close_flaky_tolerance": 1,
+        }
+        self.defect = self.mgr.create("p1", {
+            "title": "登录偶发失败", "source_case_id": "c1", "source_build_id": "b0",
+        })
+        self.t0 = time.time()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run(self, bid, results, dt, status="passed"):
+        build, store = _build(bid, results, self.t0 + dt, status=status)
+        return self.mgr.process_build(self.project, build, store)
+
+    def test_close_after_required_consecutive_passes(self):
+        self.assertEqual(self._run("b1", [_pass()], 1), [])
+        self.assertEqual(self._run("b2", [_pass()], 2), [])
+        self.assertEqual(self.mgr.get(self.defect["id"])["auto_state"]["passes"], 2)
+        transitions = self._run("b3", [_pass()], 3)
+        self.assertEqual(len(transitions), 1)
+        self.assertEqual(transitions[0]["to_status"], "verified")
+        defect = self.mgr.get(self.defect["id"])
+        self.assertEqual(defect["status"], "verified")
+        self.assertEqual(defect["closed_by"], "auto")
+        # 留痕：自动流转事件带原因与触发构建
+        events = self.mgr.events(self.defect["id"])
+        auto_events = [e for e in events if e["actor"] == "auto" and e["to_status"] == "verified"]
+        self.assertEqual(len(auto_events), 1)
+        self.assertIn("连续 3 场", auto_events[0]["reason"])
+        self.assertEqual(auto_events[0]["build_id"], "b3")
+        # 统计同步体现
+        stats = self.mgr.stats("p1")
+        self.assertEqual(stats["by_status"]["verified"], 1)
+        self.assertEqual(stats["auto_closed"], 1)
+
+    def test_flaky_tolerance_keeps_streak(self):
+        """容错 1 场：P F P P 仍累计到 3 场并自动关闭。"""
+        self._run("b1", [_pass()], 1)
+        self._run("b2", [_fail()], 2, status="failed")   # 容错，不清零
+        state = self.mgr.get(self.defect["id"])["auto_state"]
+        self.assertEqual((state["passes"], state["tolerated"]), (1, 1))
+        self._run("b3", [_pass()], 3)
+        transitions = self._run("b4", [_pass()], 4)
+        self.assertEqual(len(transitions), 1)
+        self.assertEqual(self.mgr.get(self.defect["id"])["status"], "verified")
+
+    def test_second_failure_exceeding_tolerance_resets(self):
+        """同一窗口内第 2 场失败超出容错，计数清零重来。"""
+        self._run("b1", [_pass()], 1)
+        self._run("b2", [_fail()], 2, status="failed")   # 容错
+        self._run("b3", [_fail()], 3, status="failed")   # 超出容错 → 清零
+        state = self.mgr.get(self.defect["id"])["auto_state"]
+        self.assertEqual((state["passes"], state["tolerated"]), (0, 0))
+        self._run("b4", [_pass()], 4)
+        self._run("b5", [_pass()], 5)
+        self.assertEqual(self.mgr.get(self.defect["id"])["status"], "open")
+        transitions = self._run("b6", [_pass()], 6)      # 重新累计满 3 场
+        self.assertEqual(len(transitions), 1)
+        self.assertEqual(self.mgr.get(self.defect["id"])["status"], "verified")
+
+    def test_strict_mode_resets_immediately(self):
+        """容错 0（严格模式）：任何一场失败立即清零。"""
+        self.project["auto_close_flaky_tolerance"] = 0
+        self._run("b1", [_pass()], 1)
+        self._run("b2", [_pass()], 2)
+        self._run("b3", [_fail()], 3, status="failed")
+        self.assertEqual(self.mgr.get(self.defect["id"])["auto_state"]["passes"], 0)
+        self._run("b4", [_pass()], 4)
+        self._run("b5", [_pass()], 5)
+        self.assertEqual(self.mgr.get(self.defect["id"])["status"], "open")
+
+    def test_auto_reopen_when_case_fails_again(self):
+        for i in range(1, 4):
+            self._run(f"b{i}", [_pass()], i)
+        self.assertEqual(self.mgr.get(self.defect["id"])["status"], "verified")
+        transitions = self._run("b4", [_fail()], 4, status="failed")
+        self.assertEqual(len(transitions), 1)
+        self.assertEqual(transitions[0]["to_status"], "reopened")
+        defect = self.mgr.get(self.defect["id"])
+        self.assertEqual(defect["status"], "reopened")
+        self.assertEqual(defect["reopened_by"], "auto")
+        self.assertIsNone(defect["closed_by"])
+        # 重开后计数清零，需重新累计
+        self.assertEqual(defect["auto_state"]["passes"], 0)
+        events = self.mgr.events(self.defect["id"])
+        reopen = [e for e in events if e["to_status"] == "reopened"]
+        self.assertEqual(reopen[0]["actor"], "auto")
+        self.assertIn("再次失败", reopen[0]["reason"])
+
+    def test_skipped_and_absent_case_not_counted(self):
+        self._run("b1", [{"case_id": "c1", "status": "skipped"}], 1)
+        self._run("b2", [_pass("other_case")], 2)  # 来源用例不在本场构建
+        self.assertEqual(self.mgr.get(self.defect["id"])["auto_state"]["passes"], 0)
+
+    def test_old_build_not_counted(self):
+        """结束时间早于缺陷上次流转的构建不参与判定。"""
+        build, store = _build("b_old", [_pass()], self.t0 - 100)
+        self.assertEqual(self.mgr.process_build(self.project, build, store), [])
+        self.assertEqual(self.mgr.get(self.defect["id"])["auto_state"]["passes"], 0)
+
+    def test_cancelled_build_not_counted(self):
+        build, store = _build("b_c", [_pass()], self.t0 + 1, status="cancelled")
+        self.assertEqual(self.mgr.process_build(self.project, build, store), [])
+
+    def test_same_build_not_counted_twice(self):
+        self._run("b1", [_pass()], 1)
+        self._run("b1", [_pass()], 1)  # 重复处理同一场构建
+        self.assertEqual(self.mgr.get(self.defect["id"])["auto_state"]["passes"], 1)
+
+    def test_disabled_project_noop(self):
+        self.project["auto_close_defects"] = False
+        for i in range(1, 5):
+            self.assertEqual(self._run(f"b{i}", [_pass()], i), [])
+        self.assertEqual(self.mgr.get(self.defect["id"])["status"], "open")
+
+    def test_target_status_fixed(self):
+        self.project["auto_close_target_status"] = "fixed"
+        for i in range(1, 4):
+            self._run(f"b{i}", [_pass()], i)
+        self.assertEqual(self.mgr.get(self.defect["id"])["status"], "fixed")
+
+    def test_manual_transition_distinguished(self):
+        """人工流转与自动流转在留痕和统计中可区分。"""
+        self.mgr.update(self.defect["id"], {"status": "closed"},
+                        actor="manual", operator="qa-li", reason="确认已修复")
+        defect = self.mgr.get(self.defect["id"])
+        self.assertEqual(defect["closed_by"], "manual")
+        events = self.mgr.events(self.defect["id"])
+        manual = [e for e in events if e["to_status"] == "closed"]
+        self.assertEqual(manual[0]["actor"], "manual")
+        self.assertEqual(manual[0]["operator"], "qa-li")
+        self.assertEqual(manual[0]["reason"], "确认已修复")
+        stats = self.mgr.stats("p1")
+        self.assertEqual(stats["resolved"], 1)
+        self.assertEqual(stats["auto_closed"], 0)  # 人工关闭不计入自动关闭
+
+    def test_manual_transition_resets_streak(self):
+        """人工流转后连续通过重新累计（旧构建不再计入）。"""
+        self._run("b1", [_pass()], 1)
+        self._run("b2", [_pass()], 2)
+        self.mgr.update(self.defect["id"], {"status": "in_progress"}, actor="manual")
+        # 之前的 2 场通过已作废，需重新累计 3 场
+        self._run("b3", [_pass()], 3)
+        self._run("b4", [_pass()], 4)
+        self.assertEqual(self.mgr.get(self.defect["id"])["status"], "in_progress")
+        self._run("b5", [_pass()], 5)
+        self.assertEqual(self.mgr.get(self.defect["id"])["status"], "verified")
 
 
 class TestNotify(unittest.TestCase):

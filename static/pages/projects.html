@@ -26,7 +26,7 @@
     </section>
 
     <section class="card" id="new-card" style="display:none">
-      <h2>新建项目</h2>
+      <h2 id="form-title">新建项目</h2>
       <div class="grid cols-2">
         <div>
           <label>项目名称 *</label>
@@ -46,6 +46,32 @@
           <input type="checkbox" id="np-auto" style="width:auto"> 构建失败时自动把失败用例转为缺陷
         </label>
       </div>
+      <div class="mt">
+        <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;color:var(--text)">
+          <input type="checkbox" id="np-auto-close" style="width:auto"> 缺陷自动闭环（来源用例连续通过后自动关闭，再次失败自动重开）
+        </label>
+      </div>
+      <div class="grid cols-3 mt" id="auto-close-config">
+        <div>
+          <label>连续通过场数</label>
+          <input type="number" id="np-close-passes" value="3" min="1" max="50">
+        </div>
+        <div>
+          <label>自动流转到</label>
+          <select id="np-close-target">
+            <option value="verified" selected>verified 已验证</option>
+            <option value="fixed">fixed 已修复</option>
+          </select>
+        </div>
+        <div>
+          <label>容错失败场数</label>
+          <input type="number" id="np-close-tolerance" value="1" min="0" max="10">
+        </div>
+      </div>
+      <p class="muted" style="font-size:12px;margin-top:6px">
+        口径：连续通过按跨构建累计；统计窗口内失败场数 ≤ 容错场数则不清零（该场不计通过也不打断累计），
+        超过则清零重来；容错为 0 即严格模式，任何一场失败立即清零。用例未执行 / 跳过的构建不计入。
+      </p>
       <div class="row mt">
         <button class="btn" id="btn-create">创建</button>
         <button class="btn secondary" id="btn-cancel">取消</button>
@@ -59,6 +85,7 @@
 renderNav("projects");
 
 let projects = [];
+let editingId = null;
 
 async function load() {
   const data = await api("/api/projects");
@@ -70,7 +97,7 @@ async function load() {
   }
   host.innerHTML = `
     <table>
-      <thead><tr><th>名称</th><th>描述</th><th>用例</th><th>套件</th><th>构建</th><th>创建时间</th><th>操作</th></tr></thead>
+      <thead><tr><th>名称</th><th>描述</th><th>用例</th><th>套件</th><th>构建</th><th>自动闭环</th><th>创建时间</th><th>操作</th></tr></thead>
       <tbody>
         ${projects.map(p => `
           <tr>
@@ -79,18 +106,43 @@ async function load() {
             <td>${p.case_count}</td>
             <td>${p.suite_count}</td>
             <td>${p.build_count}</td>
+            <td>${p.auto_close_defects
+              ? `<span class="badge auto">开 · ${p.auto_close_required_passes||3}场→${esc(p.auto_close_target_status||"verified")}</span>`
+              : '<span class="badge manual">关</span>'}</td>
             <td class="mono" style="font-size:12px">${fmtTime(p.created_at)}</td>
             <td>
               <div class="row" style="gap:6px">
                 <a class="btn small secondary" href="/page/cases.html?project_id=${p.id}">用例</a>
                 <a class="btn small secondary" href="/page/suites.html?project_id=${p.id}">套件</a>
                 <a class="btn small secondary" href="/page/reports.html?project_id=${p.id}">报告</a>
+                <button class="btn small secondary" onclick="editProject('${p.id}')">设置</button>
                 <button class="btn small danger" onclick="removeProject('${p.id}')">删除</button>
               </div>
             </td>
           </tr>`).join("")}
       </tbody>
     </table>`;
+}
+
+function fillForm(p) {
+  $("#np-name").value = p.name || "";
+  $("#np-repo").value = p.repo_url || "";
+  $("#np-desc").value = p.description || "";
+  $("#np-auto").checked = !!p.auto_create_defects;
+  $("#np-auto-close").checked = !!p.auto_close_defects;
+  $("#np-close-passes").value = p.auto_close_required_passes ?? 3;
+  $("#np-close-target").value = p.auto_close_target_status || "verified";
+  $("#np-close-tolerance").value = p.auto_close_flaky_tolerance ?? 1;
+}
+
+function editProject(id) {
+  const p = projects.find(x => x.id === id);
+  if (!p) return;
+  editingId = id;
+  $("#form-title").textContent = "项目设置";
+  $("#btn-create").textContent = "保存";
+  fillForm(p);
+  $("#new-card").style.display = "block";
 }
 
 async function removeProject(id) {
@@ -100,17 +152,34 @@ async function removeProject(id) {
   load();
 }
 
-$("#btn-new-toggle").onclick = () => { $("#new-card").style.display = "block"; };
-$("#btn-cancel").onclick = () => { $("#new-card").style.display = "none"; };
+$("#btn-new-toggle").onclick = () => {
+  editingId = null;
+  $("#form-title").textContent = "新建项目";
+  $("#btn-create").textContent = "创建";
+  fillForm({});
+  $("#new-card").style.display = "block";
+};
+$("#btn-cancel").onclick = () => { $("#new-card").style.display = "none"; editingId = null; };
 
 $("#btn-create").onclick = async () => {
   const name = $("#np-name").value.trim();
   if (!name) return toast("请输入项目名称", "error");
-  await api("/api/projects", { method: "POST", body: {
+  const body = {
     name, description: $("#np-desc").value, repo_url: $("#np-repo").value,
     auto_create_defects: $("#np-auto").checked,
-  }});
-  toast("项目已创建");
+    auto_close_defects: $("#np-auto-close").checked,
+    auto_close_required_passes: parseInt($("#np-close-passes").value, 10) || 3,
+    auto_close_target_status: $("#np-close-target").value,
+    auto_close_flaky_tolerance: parseInt($("#np-close-tolerance").value, 10) || 0,
+  };
+  if (editingId) {
+    await api(`/api/projects/${editingId}`, { method: "PUT", body });
+    toast("项目设置已保存");
+  } else {
+    await api("/api/projects", { method: "POST", body });
+    toast("项目已创建");
+  }
+  editingId = null;
   $("#np-name").value = ""; $("#np-desc").value = ""; $("#np-repo").value = "";
   $("#new-card").style.display = "none";
   load();

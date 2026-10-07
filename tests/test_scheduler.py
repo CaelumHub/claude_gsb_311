@@ -134,6 +134,63 @@ class TestSchedulerEndToEnd(unittest.TestCase):
         runs = self.registry.store("schedule_runs").query(where=[("schedule_id", "eq", sch["id"])])
         self.assertEqual(len(runs), 1)
 
+    def test_defect_auto_close_and_reopen(self):
+        """端到端：来源用例连续通过 → 缺陷自动关闭；再次失败 → 自动重开并留痕。"""
+        pid, suite = self._setup_project(3)
+        # 开启自动闭环：连续 2 场通过自动转 verified，严格模式（不容错）
+        self.registry.store("projects").update(pid, {
+            "auto_close_defects": True,
+            "auto_close_required_passes": 2,
+            "auto_close_target_status": "verified",
+            "auto_close_flaky_tolerance": 0,
+        })
+        defect = self.sched.defects.create(pid, {
+            "title": "用例0 偶发失败", "source_case_id": "case_0",
+        })
+
+        def wait_build(bid):
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                b = self.builds.for_project(pid).get(bid)
+                if b and b["status"] in ("passed", "failed", "cancelled", "error"):
+                    return b
+                time.sleep(0.05)
+            self.fail("构建超时未结束")
+
+        def wait_defect(status):
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                d = self.sched.defects.get(defect["id"])
+                if d and d["status"] == status:
+                    return d
+                time.sleep(0.05)
+            self.fail(f"缺陷未流转到 {status}")
+
+        # 连续两场全绿构建 → 自动 verified
+        for _ in range(2):
+            r = self.sched.submit_build(pid, suite["id"])
+            wait_build(r["id"])
+        d = wait_defect("verified")
+        self.assertEqual(d["closed_by"], "auto")
+
+        # 环境注入必失败 → 来源用例再次失败 → 自动重开
+        self.env_mgr.update(suite["env_id"],
+                            {"config": {"latency_ms": 0, "fail_rate": 1.0}})
+        r = self.sched.submit_build(pid, suite["id"], env_id=suite["env_id"])
+        wait_build(r["id"])
+        d = wait_defect("reopened")
+        self.assertEqual(d["reopened_by"], "auto")
+
+        # 留痕：自动关闭与自动重开均记录为 auto，与人工可区分
+        events = self.sched.defects.events(defect["id"])
+        transitions = [(e["to_status"], e["actor"]) for e in events]
+        self.assertIn(("verified", "auto"), transitions)
+        self.assertIn(("reopened", "auto"), transitions)
+        # 统计同步体现：reopened 计入待处理，已解决归零
+        stats = self.sched.defects.stats(pid)
+        self.assertEqual(stats["by_status"].get("reopened"), 1)
+        self.assertEqual(stats["resolved"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

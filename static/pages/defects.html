@@ -18,7 +18,7 @@
 
   <main class="main">
     <h1 class="page-title">缺陷跟踪</h1>
-    <p class="page-desc">管理测试发现的缺陷，维护状态流转，支持关联来源用例与构建。</p>
+    <p class="page-desc">管理测试发现的缺陷，维护状态流转；开启自动闭环后，来源用例连续通过即自动关闭、再次失败自动重开，每次流转均留痕。</p>
 
     <div class="card">
       <div class="row">
@@ -69,7 +69,9 @@ renderNav("defects");
 
 let projectId = null;
 let editingId = null;
+let projectCfg = {};   // 项目的自动闭环配置（连续通过场数 / 容错口径）
 const STATUS_OPTIONS = ["open","in_progress","fixed","verified","closed","reopened"];
+const RESOLVED = ["fixed","verified","closed"];
 
 async function init() {
   const params = new URLSearchParams(location.search);
@@ -79,18 +81,47 @@ async function init() {
 
 async function switchProject(id) { projectId = id; editingId = null; await refresh(); }
 
-async function refresh() { await Promise.all([loadDefects(), loadStats()]); }
+async function refresh() {
+  await loadProjectCfg();
+  await Promise.all([loadDefects(), loadStats()]);
+}
+
+async function loadProjectCfg() {
+  if (!projectId) { projectCfg = {}; return; }
+  try { projectCfg = await api(`/api/projects/${projectId}`); } catch (_) { projectCfg = {}; }
+}
 
 async function loadStats() {
   const d = await api(`/api/projects/${projectId}/defects/stats`);
   const bs = d.by_status || {}, bv = d.by_severity || {};
+  const resolved = d.resolved ?? ((bs.fixed||0)+(bs.verified||0)+(bs.closed||0));
   $("#stats").innerHTML = `
     <div class="grid cols-4">
       <div class="stat primary"><div class="v">${d.total}</div><div class="k">缺陷总数</div></div>
-      <div class="stat bad"><div class="v">${bs.open||0}</div><div class="k">待处理</div></div>
-      <div class="stat good"><div class="v">${(bs.fixed||0)+(bs.verified||0)+(bs.closed||0)}</div><div class="k">已解决</div></div>
+      <div class="stat bad"><div class="v">${(bs.open||0)+(bs.reopened||0)}</div><div class="k">待处理</div></div>
+      <div class="stat good"><div class="v">${resolved}</div><div class="k">已解决（自动 ${d.auto_closed||0}）</div></div>
       <div class="stat primary"><div class="v">${(bv.blocker||0)+(bv.critical||0)}</div><div class="k">阻断/严重</div></div>
     </div>`;
+}
+
+/* 自动闭环标记：自动关闭 / 自动重开 / 连续通过进度 */
+function autoTag(x) {
+  if (RESOLVED.includes(x.status) && x.closed_by === "auto")
+    return '<span class="badge auto">自动关闭</span>';
+  if (x.status === "reopened" && x.reopened_by === "auto")
+    return '<span class="badge auto">自动重开</span>';
+  if (RESOLVED.includes(x.status) && x.closed_by === "manual")
+    return '<span class="badge manual">人工关闭</span>';
+  return "";
+}
+
+function autoProgress(x) {
+  if (!projectCfg.auto_close_defects || !x.source_case_id || RESOLVED.includes(x.status)) return "";
+  const st = x.auto_state || {};
+  const need = projectCfg.auto_close_required_passes || 3;
+  const tol = projectCfg.auto_close_flaky_tolerance ?? 1;
+  return `<div class="mt" style="font-size:12px;color:var(--violet)">自动闭环：连续通过 ${st.passes||0}/${need} 场` +
+    (tol > 0 ? `（已容错失败 ${st.tolerated||0}/${tol} 场）` : "（严格模式，失败即清零）") + `</div>`;
 }
 
 async function loadDefects() {
@@ -104,21 +135,42 @@ async function loadDefects() {
     <div class="defect-item">
       <div class="row spread">
         <div class="row"><span class="badge sev-${x.severity}">${esc(x.severity)}</span><strong>${esc(x.title)}</strong></div>
-        <span class="badge ${x.status}">${esc(x.status)}</span>
+        <div class="row" style="gap:6px">${autoTag(x)}<span class="badge ${x.status}">${esc(x.status)}</span></div>
       </div>
       <div class="muted mt" style="font-size:13px">${esc(x.description||"")}</div>
       <div class="mt" style="font-size:12px;color:var(--text-muted)">
         ${x.assignee?`指派: ${esc(x.assignee)} · `:""}${x.source_case_id?`来源用例: <span class="mono">${esc(x.source_case_id)}</span> · `:""}
         创建 ${fmtTime(x.created_at)}
       </div>
+      ${autoProgress(x)}
       <div class="row mt" style="gap:6px">
         <select onchange="changeStatus('${x.id}', this.value)" style="max-width:150px">
           ${STATUS_OPTIONS.map(s => `<option ${s===x.status?'selected':''}>${s}</option>`).join("")}
         </select>
         <button class="btn small secondary" onclick="editDefect('${x.id}')">编辑</button>
+        <button class="btn small secondary" onclick="toggleEvents('${x.id}')">流转记录</button>
         <button class="btn small danger" onclick="delDefect('${x.id}')">删除</button>
       </div>
+      <div id="events-${x.id}" style="display:none"></div>
     </div>`).join("");
+}
+
+async function toggleEvents(id) {
+  const host = $(`#events-${id}`);
+  if (!host) return;
+  if (host.style.display !== "none") { host.style.display = "none"; return; }
+  const d = await api(`/api/defects/${id}/events`);
+  const events = d.events || [];
+  host.style.display = "block";
+  host.innerHTML = events.length ? `<table class="mt">
+    <thead><tr><th>时间</th><th>流转</th><th>方式</th><th>原因</th></tr></thead>
+    <tbody>${events.map(e => `<tr>
+      <td class="mono" style="font-size:12px">${fmtTime(e.created_at)}</td>
+      <td class="mono" style="font-size:12px">${esc(e.from_status||"—")} → ${esc(e.to_status||"—")}</td>
+      <td><span class="badge ${e.actor==="auto"?"auto":"manual"}">${e.actor==="auto"?"自动":"人工"}${e.operator?` · ${esc(e.operator)}`:""}</span></td>
+      <td class="muted" style="font-size:12px">${esc(e.reason||"")}</td>
+    </tr>`).join("")}</tbody></table>`
+    : '<div class="empty mt">暂无流转记录</div>';
 }
 
 async function changeStatus(id, status) {
